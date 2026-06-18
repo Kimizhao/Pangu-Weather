@@ -1,0 +1,100 @@
+version: '3.8'
+
+services:
+  # 24小时单步推理
+  pangu-24h:
+    image: pangu-weather-inference
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: pangu-24h
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    volumes:
+      # 挂载整个项目目录（包含.onnx模型和input_data）
+      - .:/workspace:ro
+      # 输出目录单独挂载为读写
+      - ./output_data:/app/output_data
+    environment:
+      - CUDA_VISIBLE_DEVICES=0
+      - PANGU_BASE_DIR=/app
+      - PANGU_MODEL_DIR=/workspace
+      - ORT_INTRA_THREADS=4
+      - ORT_INTER_THREADS=4
+    command: ["python", "/app/inference_docker.py"]
+
+  # 6小时单步推理
+  pangu-6h:
+    image: pangu-weather-inference
+    container_name: pangu-6h
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    volumes:
+      - .:/workspace:ro
+      - ./output_data:/app/output_data
+    environment:
+      - CUDA_VISIBLE_DEVICES=0
+      - PANGU_MODEL_DIR=/workspace
+      - PANGU_BASE_DIR=/app
+    command: ["python", "-c",
+      "import os,numpy as np,onnxruntime as ort,time;\
+       opts=ort.SessionOptions();opts.enable_cpu_mem_arena=False;opts.enable_mem_pattern=False;opts.enable_mem_reuse=False;opts.intra_op_num_threads=4;\
+       sess=ort.InferenceSession(os.path.join(os.environ['PANGU_MODEL_DIR'],'pangu_weather_6.onnx'),sess_options=opts,providers=[('CUDAExecutionProvider',{'arena_extend_strategy':'kSameAsRequested'}),'CPUExecutionProvider']);\
+       upper=np.load(os.path.join(os.environ['PANGU_MODEL_DIR'],'input_data/input_upper.npy')).astype(np.float32);\
+       surface=np.load(os.path.join(os.environ['PANGU_MODEL_DIR'],'input_data/input_surface.npy')).astype(np.float32);\
+       t0=time.time();out,out_s=sess.run(None,{'input':upper,'input_surface':surface});\
+       print(f'6h推理耗时:{time.time()-t0:.2f}s');\
+       os.makedirs('/app/output_data',exist_ok=True);np.save('/app/output_data/output_upper_6h',out);np.save('/app/output_data/output_surface_6h',out_s);\
+       print('6h预报结果已保存')"]
+
+  # 迭代推理（7天预报，24h+6h组合）
+  pangu-iterative:
+    image: pangu-weather-inference
+    container_name: pangu-iterative
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    volumes:
+      - .:/workspace:ro
+      - ./output_data:/app/output_data
+    environment:
+      - CUDA_VISIBLE_DEVICES=0
+      - PANGU_MODEL_DIR=/workspace
+      - PANGU_BASE_DIR=/app
+    command: ["python", "/app/inference_iterative_docker.py"]
+
+  # CPU推理（无GPU环境备用）
+  pangu-cpu:
+    image: pangu-weather-inference
+    container_name: pangu-cpu
+    volumes:
+      - .:/workspace:ro
+      - ./output_data:/app/output_data
+    environment:
+      - PANGU_MODEL_DIR=/workspace
+      - PANGU_BASE_DIR=/app
+    command: ["python", "-c",
+      "import os,numpy as np,onnxruntime as ort,time;\
+       opts=ort.SessionOptions();opts.enable_cpu_mem_arena=False;opts.enable_mem_pattern=False;opts.enable_mem_reuse=False;\
+       sess=ort.InferenceSession(os.path.join(os.environ['PANGU_MODEL_DIR'],'pangu_weather_24.onnx'),sess_options=opts,providers=['CPUExecutionProvider']);\
+       upper=np.load(os.path.join(os.environ['PANGU_MODEL_DIR'],'input_data/input_upper.npy')).astype(np.float32);\
+       surface=np.load(os.path.join(os.environ['PANGU_MODEL_DIR'],'input_data/input_surface.npy')).astype(np.float32);\
+       t0=time.time();out,out_s=sess.run(None,{'input':upper,'input_surface':surface});\
+       print(f'CPU推理耗时:{time.time()-t0:.2f}s');\
+       os.makedirs('/app/output_data',exist_ok=True);np.save('/app/output_data/output_upper_cpu',out);np.save('/app/output_data/output_surface_cpu',out_s);\
+       print('CPU推理结果已保存')"]
+    profiles: ["cpu"]

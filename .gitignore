@@ -1,0 +1,7 @@
+# Model files (~1.1GB each)
+pangu_weather_*.onnx
+
+# Data directories
+input_data/
+output_data/
+models/
